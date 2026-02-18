@@ -82,7 +82,7 @@ A side-by-side comparison table is also displayed in the notebook.
 Dependencies are installed automatically by the notebook:
 
 ```
-qwen-asr  transformers  sentencepiece  sacremoses  deep-translator  flash-attn  librosa
+qwen-asr  transformers  sentencepiece  sacremoses  deep-translator  google-genai  flash-attn  librosa
 ```
 
 ## License
