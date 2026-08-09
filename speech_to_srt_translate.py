@@ -1,15 +1,16 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.12,<3.13"
 # dependencies = [
 #     "marimo",
+#     "numpy",
+#     "torch==2.10.*",
+#     "transformers",
+#     "sentencepiece",
+#     "qwen-asr",
 #     "deep-translator",
 #     "google-genai",
-#     "numpy",
-#     "flash-attn",
-#     "qwen-asr",
-#     "sentencepiece",
-#     "torch",
-#     "transformers",
+#     "imageio-ffmpeg",
+#     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3%2Bcu128torch2.10-cp312-cp312-linux_x86_64.whl",
 # ]
 # ///
 
@@ -36,11 +37,12 @@ def _(mo):
     2. **Generates** an SRT subtitle file from the transcription
     3. **Translates** the SRT to a target language using Gemini or Google Translate
 
-    Configure `SOURCE_LANGUAGE` and `TARGET_LANGUAGE` in the config cell below (default: Japanese → English).
+    Upload audio and choose the language and translation settings in the controls below.
 
-    **Requirements:** A Colab runtime with a **T4 GPU** (free tier works).
+    **Requirements:** A CUDA-enabled runtime with a **T4 GPU** (free tier works).
 
-    > ⚠️ Make sure you've selected **Runtime → Change runtime type → T4 GPU** before running.
+    > ⚠️ Molab installs the packages declared in this notebook, including the
+    > Python 3.12 / CUDA 12.8 / PyTorch 2.10 prebuilt FlashAttention wheel.
     """)
 
 
@@ -54,23 +56,9 @@ def _(mo):
 
 
 @app.cell
-def _():
-    # ⚠️ IMPORTANT ⚠️
-    # Path to the file to transcribe — Supported formats:
-    # .wav, .mp3, .flac, .ogg, .m4a, etc.
-    AUDIO_PATH = "ja_audio.mp3"  # @param {type:"string"}
-
-    # Source and target languages for transcription and translation
-    SOURCE_LANGUAGE = "Japanese"  # @param {type:"string"}
-    TARGET_LANGUAGE = "English"  # @param {type:"string"}
-
-    # Translation methods to run
-    TRANSLATE_USING_GEMINI = True  # Gemini (Using your API key)
-    TRANSLATE_USING_GT = True  # Google Translate
-
+def _(mo):
     # ISO 639-1 language codes — used for file naming and translation APIs.
-    # Add more as needed.
-    LANG_CODES = {
+    lang_codes = {
         "Arabic": "ar",
         "Chinese": "zh",
         "Czech": "cs",
@@ -101,16 +89,45 @@ def _():
         "Ukrainian": "uk",
         "Vietnamese": "vi",
     }
-    SRC_CODE = LANG_CODES[SOURCE_LANGUAGE]
-    TGT_CODE = LANG_CODES[TARGET_LANGUAGE]
+    languages = list(lang_codes)
+    audio_file = mo.ui.file(
+        filetypes=["audio/*", ".wav", ".mp3", ".flac", ".ogg", ".m4a"],
+        kind="area",
+        max_size=1_000_000_000,  # 1 GB
+        label="Audio file",
+    )
+    source_language = mo.ui.dropdown(
+        options=languages, value="Japanese", label="Source language"
+    )
+    target_language = mo.ui.dropdown(
+        options=languages, value="English", label="Target language"
+    )
+    translate_using_gemini = mo.ui.checkbox(value=True, label="Translate with Gemini")
+    translate_using_gt = mo.ui.checkbox(
+        value=True, label="Translate with Google Translate"
+    )
+    gemini_api_key = mo.ui.text(
+        kind="password",
+        label="Gemini API key (optional; can also use GOOGLE_API_KEY)",
+    )
+    config = mo.vstack(
+        [
+            mo.md("### General settings"),
+            audio_file,
+            mo.hstack([source_language, target_language]),
+            mo.hstack([translate_using_gemini, translate_using_gt]),
+            gemini_api_key,
+        ]
+    )
+    config
     return (
-        AUDIO_PATH,
-        SOURCE_LANGUAGE,
-        SRC_CODE,
-        TARGET_LANGUAGE,
-        TGT_CODE,
-        TRANSLATE_USING_GEMINI,
-        TRANSLATE_USING_GT,
+        audio_file,
+        gemini_api_key,
+        lang_codes,
+        source_language,
+        target_language,
+        translate_using_gemini,
+        translate_using_gt,
     )
 
 
@@ -122,74 +139,94 @@ def _(mo):
 
 
 @app.cell
-def _():
+def _(mo):
     # Chunk length (seconds) — Each audio chunk is processed separately
     # to fit in GPU memory. Shorter = less VRAM but more chunks.
     # 20 s works on a free-tier T4 (15 GB). Increase if possible.
-    CHUNK_SEC = 200
+    chunk_sec = mo.ui.slider(
+        20, 600, value=200, step=10, label="Chunk length (seconds)"
+    )
 
     # Maximum batch size for the ASR Model
-    MAX_INFERENCE_BATCH_SIZE = 32  # TEST IF 32 WORKS, CHANGE TO 1 AGAIN IF NOT
+    max_inference_batch_size = mo.ui.slider(
+        1, 256, value=32, label="Maximum ASR inference batch size"
+    )
 
     # Gemini translation batch size — Number of subtitle lines sent
     # per API call. Larger = fewer calls but longer prompts.
-    GEMINI_BATCH_SIZE = 100
-    return CHUNK_SEC, GEMINI_BATCH_SIZE, MAX_INFERENCE_BATCH_SIZE
+    gemini_batch_size = mo.ui.slider(
+        1, 200, value=100, label="Gemini translation batch size"
+    )
+    technical_config = mo.vstack(
+        [
+            mo.md("### Technical settings"),
+            chunk_sec,
+            max_inference_batch_size,
+            gemini_batch_size,
+        ]
+    )
+    technical_config
+    return chunk_sec, gemini_batch_size, max_inference_batch_size
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 1 · Install Dependencies
-    """)
+    ## 1 · Prepare audio
 
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 2 · Upload Audio File
-
-    Supported formats: `.wav`, `.mp3`, `.flac`, `.ogg`, `.m4a`, etc.
+    The uploaded audio is saved temporarily for `ffmpeg`. Select a file in the
+    configuration controls above to continue.
     """)
 
 
 @app.cell
-def _(AUDIO_PATH):
-    import os
+def _(audio_file, lang_codes, source_language, target_language, mo):
+    import tempfile
+    from pathlib import Path as _Path
 
-    from IPython.display import Audio
-
-    # Preview the uploaded audio
-    audio = None
-    if AUDIO_PATH and os.path.exists(AUDIO_PATH):
-        audio = Audio(AUDIO_PATH)
-    else:
-        print("⚠️  Please upload an audio file in the cell above first.")
-    audio
+    mo.stop(
+        not audio_file.value, mo.md("Upload an audio file to begin.").callout("info")
+    )
+    uploaded_name = audio_file.name()
+    suffix = _Path(uploaded_name).suffix if uploaded_name else ""
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as uploaded:
+        uploaded.write(audio_file.contents() or b"")
+        audio_path = uploaded.name
+    source_language_value = source_language.value
+    target_language_value = target_language.value
+    src_code = lang_codes[source_language_value]
+    tgt_code = lang_codes[target_language_value]
+    return (
+        audio_path,
+        uploaded_name,
+        source_language_value,
+        src_code,
+        target_language_value,
+        tgt_code,
+    )
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 3 · Transcribe with Qwen3-ASR-1.7B
+    ## 2 · Transcribe with Qwen3-ASR-1.7B
 
     To fit on a T4 (15 GB VRAM), we run ASR and alignment as **two separate steps** so both models are never loaded at the same time.
     """)
 
 
 @app.cell
-def _(AUDIO_PATH, CHUNK_SEC, MAX_INFERENCE_BATCH_SIZE, os):
+def _(audio_path, chunk_sec, max_inference_batch_size):
     import gc
+    import os as _os
     import subprocess
 
+    import imageio_ffmpeg
     import numpy as np
     import torch
     from qwen_asr import Qwen3ASRModel
 
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    assert AUDIO_PATH and os.path.exists(AUDIO_PATH), (
-        "No audio file found. Run the upload cell above first."
-    )
+    _os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     # Help PyTorch reuse freed VRAM fragments
     SR = 16000
 
@@ -199,7 +236,7 @@ def _(AUDIO_PATH, CHUNK_SEC, MAX_INFERENCE_BATCH_SIZE, os):
         without deprecated fallback paths.
         """  # qwen-asr expects 16 kHz
         cmd = [
-            "ffmpeg",
+            imageio_ffmpeg.get_ffmpeg_exe(),
             "-y",
             "-i",
             path,
@@ -216,25 +253,25 @@ def _(AUDIO_PATH, CHUNK_SEC, MAX_INFERENCE_BATCH_SIZE, os):
         proc = subprocess.run(cmd, capture_output=True, check=True)
         return np.frombuffer(proc.stdout, dtype=np.float32)
 
-    print(f"Loading audio: {os.path.basename(AUDIO_PATH)} …")
-    full_wav = load_audio(AUDIO_PATH)
+    print("Loading uploaded audio …")
+    full_wav = load_audio(audio_path)
     total_dur = len(full_wav) / SR
     print(f"Duration: {total_dur:.1f} s ({total_dur / 60:.1f} min)")
-    chunk_samples = CHUNK_SEC * SR
+    chunk_samples = chunk_sec.value * SR
     audio_chunks = []
     for start in range(0, len(full_wav), chunk_samples):
         chunk = full_wav[start : start + chunk_samples]
         if len(chunk) < SR // 2:
             continue
         audio_chunks.append((float(start) / SR, chunk))  # raw 32-bit float PCM
-    print(f"Split into {len(audio_chunks)} chunks of ≤{CHUNK_SEC} s each.")
+    print(f"Split into {len(audio_chunks)} chunks of ≤{chunk_sec.value} s each.")
     print("\nLoading Qwen3-ASR-1.7B …")  # mono
     asr_model = Qwen3ASRModel.from_pretrained(
         "Qwen/Qwen3-ASR-1.7B",
         dtype=torch.bfloat16,
         device_map="cuda:0",
         attn_implementation="flash_attention_2",
-        max_inference_batch_size=MAX_INFERENCE_BATCH_SIZE,
+        max_inference_batch_size=max_inference_batch_size.value,
         max_new_tokens=4096,
     )
     # --- Load and split audio manually ---
@@ -248,7 +285,7 @@ def _(AUDIO_PATH, CHUNK_SEC, MAX_INFERENCE_BATCH_SIZE, os):
 
 
 @app.cell
-def _(SOURCE_LANGUAGE, SR, asr_model, audio_chunks, gc, torch):
+def _(SR, asr_model, audio_chunks, gc, source_language_value, torch):
     # Transcribe each chunk individually to stay within T4 VRAM
     all_texts = []
     for _i, (_offset, _chunk_wav) in enumerate(audio_chunks):
@@ -259,7 +296,7 @@ def _(SOURCE_LANGUAGE, SR, asr_model, audio_chunks, gc, torch):
         with torch.inference_mode():
             r = asr_model.transcribe(
                 audio=(_chunk_wav, SR),
-                language=SOURCE_LANGUAGE,
+                language=source_language_value,
                 return_time_stamps=False,
             )
         _text = r[0].text.strip()
@@ -277,7 +314,7 @@ def _(SOURCE_LANGUAGE, SR, asr_model, audio_chunks, gc, torch):
 
 
 @app.cell
-def _(SOURCE_LANGUAGE, SR, all_texts, audio_chunks, gc, torch):
+def _(SR, all_texts, audio_chunks, gc, source_language_value, torch):
     # --- Step 2: Forced Aligner for word-level timestamps ---
     from dataclasses import replace
 
@@ -301,7 +338,7 @@ def _(SOURCE_LANGUAGE, SR, all_texts, audio_chunks, gc, torch):
         # Align each chunk separately (same chunking as ASR) and shift timestamps
         with torch.inference_mode():
             alignment = aligner.align(
-                audio=(_chunk_wav, SR), text=chunk_text, language=SOURCE_LANGUAGE
+                audio=(_chunk_wav, SR), text=chunk_text, language=source_language_value
             )
         for stamp in alignment[0]:
             shifted = replace(
@@ -327,13 +364,14 @@ def _(SOURCE_LANGUAGE, SR, all_texts, audio_chunks, gc, torch):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 4 · Generate SRT Subtitles
+    ## 3 · Generate SRT Subtitles
     """)
 
 
 @app.cell
-def _(AUDIO_PATH, SOURCE_LANGUAGE, SRC_CODE, os, time_stamps):
+def _(audio_name, source_language_value, src_code, time_stamps):
     from datetime import timedelta
+    from pathlib import Path
 
     def format_srt_time(seconds: float) -> str:
         """Convert seconds to SRT timestamp format: HH:MM:SS,mmm"""
@@ -410,11 +448,13 @@ def _(AUDIO_PATH, SOURCE_LANGUAGE, SRC_CODE, os, time_stamps):
 
     subtitles_src = group_timestamps_to_subtitles(time_stamps)
     srt_src = build_srt(subtitles_src)
-    base_name = os.path.splitext(os.path.basename(AUDIO_PATH))[0]
-    srt_src_path = f"/content/{base_name}_{SRC_CODE}.srt"
+    base_name = Path(audio_name or "audio").stem
+    output_dir = Path.cwd() / "srt_output"
+    output_dir.mkdir(exist_ok=True)
+    srt_src_path = output_dir / f"{base_name}_{src_code}.srt"
     with open(srt_src_path, "w", encoding="utf-8") as _f:
         _f.write(srt_src)
-    print(f"✅ {SOURCE_LANGUAGE} SRT saved to: {srt_src_path}")
+    print(f"✅ {source_language_value} SRT saved to: {srt_src_path}")
     print(f"   {len(subtitles_src)} subtitle segments\n")
     print("--- Preview (first 10 segments) ---")
     # Build source-language SRT
@@ -426,7 +466,7 @@ def _(AUDIO_PATH, SOURCE_LANGUAGE, SRC_CODE, os, time_stamps):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 5 · Translate Subtitles with Gemini (free via Google AI Studio)
+    ## 4 · Translate Subtitles with Gemini (free via Google AI Studio)
 
     Get an API key at https://aistudio.google.com/app/api-keys. By default, it uses
     a free tier, where billing isn't set up, so you shouldn't worry about getting
@@ -438,38 +478,37 @@ def _(mo):
 
 @app.cell
 def _(
-    GEMINI_BATCH_SIZE,
-    SOURCE_LANGUAGE,
-    TARGET_LANGUAGE,
-    TGT_CODE,
-    TRANSLATE_USING_GEMINI,
+    gemini_api_key,
+    gemini_batch_size,
+    source_language_value,
+    target_language_value,
+    tgt_code,
+    translate_using_gemini,
     base_name,
     build_srt,
-    os,
+    srt_src_path,
     subtitles_src,
 ):
+    import os as _os
+    import time
+
     subtitles_tgt_gemini = []
     srt_tgt_gemini_path = None
-    if TRANSLATE_USING_GEMINI:
+    if translate_using_gemini.value:
         import json
-        import time
 
         from google import genai
-        from google.colab import userdata
 
-        try:
-            api_key = userdata.get("GOOGLE_API_KEY")
-        except userdata.SecretNotFoundError:
-            api_key = os.environ.get("GOOGLE_API_KEY", "")
+        api_key = gemini_api_key.value or _os.environ.get("GOOGLE_API_KEY", "")
         assert api_key, (
-            "No Gemini API key found. In Colab, go to 🔑 Secrets (left sidebar) and add GOOGLE_API_KEY."
+            "Enter a Gemini API key in the configuration controls or set GOOGLE_API_KEY."
         )
         client = genai.Client(api_key=api_key)
         GEMINI_MODEL = "gemini-3.6-flash"
-        SYSTEM_PROMPT = f"Translate numbered {SOURCE_LANGUAGE} subtitle lines into {TARGET_LANGUAGE}. Return only a JSON array of strings, one translation per line, in the same order. Keep subtitles natural, concise, and easy to read on screen. Preserve meaning, tone, speaker intent, and punctuation where useful. Do not add numbering, explanations, or extra text. Do not merge or split lines unless clarity requires it. Use plain dialogue and keep sound effects or non-speech text concise."
+        SYSTEM_PROMPT = f"Translate numbered {source_language_value} subtitle lines into {target_language_value}. Return only a JSON array of strings, one translation per line, in the same order. Keep subtitles natural, concise, and easy to read on screen. Preserve meaning, tone, speaker intent, and punctuation where useful. Do not add numbering, explanations, or extra text. Do not merge or split lines unless clarity requires it. Use plain dialogue and keep sound effects or non-speech text concise."
 
         def translate_with_gemini(
-            texts: list[str], batch_size: int = GEMINI_BATCH_SIZE
+            texts: list[str], batch_size: int = gemini_batch_size.value
         ) -> list[str]:
             """Translate texts using Gemini in batches."""
             all_translations = []
@@ -504,7 +543,7 @@ def _(
                             print(f"⚠️ retry ({e.__class__.__name__}) …", end=" ")
                             time.sleep(2**attempt)
                         else:
-                            print(f"❌ fallback (kept {SOURCE_LANGUAGE})")
+                            print(f"❌ fallback (kept {source_language_value})")
                             all_translations.extend(batch)
                 if batch_start + batch_size < len(texts):
                     time.sleep(1)
@@ -521,22 +560,22 @@ def _(
             for (start, end, _), tgt_text in zip(subtitles_src, tgt_texts_gemini)
         ]
         srt_tgt_gemini = build_srt(subtitles_tgt_gemini)
-        srt_tgt_gemini_path = f"/content/{base_name}_{TGT_CODE}_gemini.srt"
+        srt_tgt_gemini_path = srt_src_path.parent / f"{base_name}_{tgt_code}_gemini.srt"
         with open(srt_tgt_gemini_path, "w", encoding="utf-8") as _f:
             _f.write(srt_tgt_gemini)
-        print(f"✅ Gemini {TARGET_LANGUAGE} SRT saved to: {srt_tgt_gemini_path}")
+        print(f"✅ Gemini {target_language_value} SRT saved to: {srt_tgt_gemini_path}")
         print(f"   {len(subtitles_tgt_gemini)} subtitle segments\n")
         print("--- Preview (first 10 segments) ---")
         print("\n".join(srt_tgt_gemini.split("\n")[:40]))
     else:
-        print("⏭️  Gemini translation skipped (TRANSLATE_USING_GEMINI = False)")
+        print("⏭️  Gemini translation skipped")
     return srt_tgt_gemini_path, subtitles_tgt_gemini, time
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 6 · Translate Subtitles with Google Translate (free)
+    ## 5 · Translate Subtitles with Google Translate (free)
 
     Uses the free Google Translate API via `deep-translator`. No API key needed. Quality sits below Gemini.
     """)
@@ -544,20 +583,21 @@ def _(mo):
 
 @app.cell
 def _(
-    SRC_CODE,
-    TGT_CODE,
-    TRANSLATE_USING_GT,
+    src_code,
+    tgt_code,
+    translate_using_gt,
     base_name,
     build_srt,
+    srt_src_path,
     subtitles_src,
     time,
 ):
     subtitles_tgt_gt = []
     srt_tgt_gt_path = None
-    if TRANSLATE_USING_GT:
+    if translate_using_gt.value:
         from deep_translator import GoogleTranslator
 
-        gtranslator = GoogleTranslator(source=SRC_CODE, target=TGT_CODE)
+        gtranslator = GoogleTranslator(source=src_code, target=tgt_code)
 
         def translate_with_google(texts: list[str], batch_size: int = 50) -> list[str]:
             """Translate texts using Google Translate (free).
@@ -601,7 +641,7 @@ def _(
             for (start, end, _), tgt_text in zip(subtitles_src, tgt_texts_gt)
         ]
         srt_tgt_gt = build_srt(subtitles_tgt_gt)
-        srt_tgt_gt_path = f"/content/{base_name}_{TGT_CODE}_gtranslate.srt"
+        srt_tgt_gt_path = srt_src_path.parent / f"{base_name}_{tgt_code}_gtranslate.srt"
         with open(srt_tgt_gt_path, "w", encoding="utf-8") as _f:
             _f.write(srt_tgt_gt)
         print(f"✅ Google Translate SRT saved to: {srt_tgt_gt_path}")
@@ -609,27 +649,27 @@ def _(
         print("--- Preview (first 10 segments) ---")
         print("\n".join(srt_tgt_gt.split("\n")[:40]))
     else:
-        print("⏭️  Google Translate skipped (TRANSLATE_USING_GT = False)")
+        print("⏭️  Google Translate skipped")
     return srt_tgt_gt_path, subtitles_tgt_gt
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 7 · Side-by-Side Comparison
+    ## 6 · Side-by-Side Comparison
     """)
 
 
 @app.cell
 def _(
-    SOURCE_LANGUAGE,
-    format_srt_time,
     mo,
+    source_language_value,
+    format_srt_time,
     subtitles_src,
     subtitles_tgt_gemini,
     subtitles_tgt_gt,
 ):
-    cols = [(SOURCE_LANGUAGE, subtitles_src)]
+    cols = [(source_language_value, subtitles_src)]
     if subtitles_tgt_gemini:
         cols.append(("Gemini 3.6 Flash", subtitles_tgt_gemini))
     if subtitles_tgt_gt:
@@ -666,42 +706,50 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 8 · Download SRT Files
+    ## 7 · Download SRT Files
     """)
 
 
 @app.cell
 def _(
-    SOURCE_LANGUAGE,
-    TARGET_LANGUAGE,
+    mo,
     srt_src_path,
     srt_tgt_gemini_path,
     srt_tgt_gt_path,
 ):
-    try:
-        from google.colab import files
-
-        print(f"Downloading {SOURCE_LANGUAGE} SRT …")
-        files.download(srt_src_path)
-        if srt_tgt_gemini_path:
-            print(f"Downloading {TARGET_LANGUAGE} SRT (Gemini) …")
-            files.download(srt_tgt_gemini_path)
-        if srt_tgt_gt_path:
-            print(f"Downloading {TARGET_LANGUAGE} SRT (Google Translate) …")
-            files.download(srt_tgt_gt_path)
-    except ImportError:
-        print("Not running in Colab — files saved at:")
-        print(f"  {SOURCE_LANGUAGE}: {srt_src_path}")
-        if srt_tgt_gemini_path:
-            print(f"  {TARGET_LANGUAGE} (Gemini): {srt_tgt_gemini_path}")
-        if srt_tgt_gt_path:
-            print(f"  {TARGET_LANGUAGE} (Google Trans.): {srt_tgt_gt_path}")
+    downloads = [
+        mo.download(
+            srt_src_path.read_bytes(),
+            filename=srt_src_path.name,
+            mimetype="text/plain",
+            label="Download source SRT",
+        )
+    ]
+    if srt_tgt_gemini_path:
+        downloads.append(
+            mo.download(
+                srt_tgt_gemini_path.read_bytes(),
+                filename=srt_tgt_gemini_path.name,
+                mimetype="text/plain",
+                label="Download Gemini SRT",
+            )
+        )
+    if srt_tgt_gt_path:
+        downloads.append(
+            mo.download(
+                srt_tgt_gt_path.read_bytes(),
+                filename=srt_tgt_gt_path.name,
+                mimetype="text/plain",
+                label="Download Google Translate SRT",
+            )
+        )
+    mo.hstack(downloads)
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 9 · Cleanup (Optional)
+    ## 8 · Cleanup (Optional)
 
     Free GPU memory if you want to run other things in this session.
     """)
