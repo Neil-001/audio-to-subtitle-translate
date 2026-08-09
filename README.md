@@ -3,9 +3,14 @@
   <a target="_blank" href="https://colab.research.google.com/github/Neil-001/audio-to-subtitle-translate/blob/main/speech_to_srt_translate.ipynb">
     <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
   </a>
+  <a target="_blank" href="https://molab.marimo.io/github/Neil-001/audio-to-subtitle-translate/blob/main/speech_to_srt_translate.py">
+    <img src="https://marimo.io/molab-shield.svg" alt="Open in molab"/>
+  </a>
 </div>
 
 A Google Colab notebook that transcribes audio into timed SRT subtitles using [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B), then optionally translates them into another language.
+
+An equivalent marimo notebook is also available at [speech_to_srt_translate.py](speech_to_srt_translate.py) and can be opened in molab with the badge above.
 
 Runs on a **free-tier T4 GPU** (15 GB VRAM).
 
