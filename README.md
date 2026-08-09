@@ -14,13 +14,12 @@ Runs on a **free-tier T4 GPU** (15 GB VRAM).
 1. **Transcribes** audio with [Qwen/Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
 2. **Aligns** word-level timestamps via [Qwen/Qwen3-ForcedAligner-0.6B](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)
 3. **Generates** an `.srt` subtitle file with grouped, timed segments
-4. **Translates** (optional) using up to three backends:
+4. **Translates** (optional) using Gemini or Google Translate:
 
 | Method | Quality | Cost | Notes |
 |---|---|---|---|
-| **Gemini 3 Flash** | Best | Free (API key, rate limited) | Requires a [Google AI Studio](https://aistudio.google.com/app/api-keys) key |
+| **Gemini 3.6 Flash** | Best | Free (API key, rate limited) | Requires a [Google AI Studio](https://aistudio.google.com/app/api-keys) key |
 | **Google Translate** | Good | Free | Via `deep-translator`, no key needed |
-| **opus-mt** | Basic | Free | On-device [Helsinki-NLP/opus-mt](https://huggingface.co/Helsinki-NLP) model; not all language pairs available |
 
 ## Quick start
 
@@ -46,7 +45,6 @@ TARGET_LANGUAGE = "English"
 # Toggle translation backends
 TRANSLATE_USING_GEMINI = True
 TRANSLATE_USING_GT     = True
-TRANSLATE_USING_OPUS   = False
 ```
 
 ### Technical parameters
@@ -55,18 +53,21 @@ TRANSLATE_USING_OPUS   = False
 |---|---|---|
 | `CHUNK_SEC` | `200` | Audio chunk length in seconds. Lower = less VRAM |
 | `MAX_INFERENCE_BATCH_SIZE` | `32` | ASR batch size. Reduce to `1` if you hit OOM |
-| `GEMINI_BATCH_SIZE` | `100` | Subtitle lines per Gemini API call |
+| `GEMINI_BATCH_SIZE` | `100` | Subtitle lines per Gemini API call. Larger = fewer requests and faster translation, up to prompt limits |
 
 ## Supported languages
 
 The notebook ships with ISO 639-1 codes for 29 languages (Arabic, Chinese, Czech, Danish, Dutch, English, Finnish, French, German, Greek, Hebrew, Hindi, Hungarian, Indonesian, Italian, Japanese, Korean, Malay, Norwegian, Polish, Portuguese, Romanian, Russian, Spanish, Swedish, Thai, Turkish, Ukrainian, Vietnamese). Add more by extending the `LANG_CODES` dict.
 
-> **Note:** Qwen3-ASR supports many languages for transcription, but opus-mt has limited language pair coverage.
-> Gemini and Google Translate support virtually all pairs.
-
 ## How it fits in 15 GB VRAM
 
 The ASR model (~3.4 GB) and ForcedAligner (~1.2 GB) are loaded **sequentially** — each is freed before the next is loaded. Audio is split into configurable-length chunks to avoid O(n²) attention blowup. All models use `bfloat16` and `flash_attention_2`.
+
+Speed wins that do not change the pipeline structure:
+
+1. Increase `GEMINI_BATCH_SIZE` if the prompt still fits comfortably. That reduces API calls.
+2. Keep only the translation backend you actually need. Removing unused branches lowers notebook runtime and setup cost.
+3. If GPU memory allows it, test a larger `CHUNK_SEC` or `MAX_INFERENCE_BATCH_SIZE` on your own audio. Those are the main knobs for ASR throughput.
 
 ## Output files
 
@@ -75,7 +76,6 @@ The ASR model (~3.4 GB) and ForcedAligner (~1.2 GB) are loaded **sequentially** 
 | `{name}_{src}.srt` | Source-language subtitles with timestamps |
 | `{name}_{tgt}_gemini.srt` | Gemini translation |
 | `{name}_{tgt}_gtranslate.srt` | Google Translate translation |
-| `{name}_{tgt}_opus.srt` | opus-mt translation |
 
 A side-by-side comparison table is also displayed in the notebook.
 
@@ -87,7 +87,7 @@ A side-by-side comparison table is also displayed in the notebook.
 Dependencies are installed automatically by the notebook:
 
 ```
-qwen-asr  transformers  sentencepiece  sacremoses  deep-translator  google-genai  flash-attn  librosa
+qwen-asr  transformers  sentencepiece  deep-translator  google-genai  flash-attn  librosa
 ```
 
 ## License
